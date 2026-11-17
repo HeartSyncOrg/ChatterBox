@@ -1,4 +1,4 @@
-// Connect to Socket.io with optimized transports (prioritizing WebSocket)
+// Connect to Socket.io with optimized transports
 const socket = io({
   transports: ['websocket', 'polling'],
   reconnectionDelay: 1000,
@@ -11,6 +11,7 @@ let currentUser = {
   id: null,
   username: localStorage.getItem('pulsechat_username') || '',
   avatarColor: '#6366f1',
+  status: localStorage.getItem('pulsechat_status') || 'online',
 };
 let currentRoom = localStorage.getItem('pulsechat_room') || 'general';
 let availableRooms = [];
@@ -18,6 +19,7 @@ let soundEnabled = localStorage.getItem('pulsechat_sound') !== 'false';
 let typingTimeout = null;
 let isCurrentlyTyping = false;
 let userScrolledUp = false;
+let spamCooldownTimer = null;
 
 // DOM Elements
 const joinModal = document.getElementById('joinModal');
@@ -37,6 +39,8 @@ const newRoomBtn = document.getElementById('newRoomBtn');
 
 const currentUserName = document.getElementById('currentUserName');
 const currentUserAvatar = document.getElementById('currentUserAvatar');
+const myStatusDot = document.getElementById('myStatusDot');
+const statusSelect = document.getElementById('statusSelect');
 const editNameBtn = document.getElementById('editNameBtn');
 
 const roomTitle = document.getElementById('roomTitle');
@@ -45,6 +49,12 @@ const connectionStatus = document.getElementById('connectionStatus');
 const connectionText = document.getElementById('connectionText');
 const soundToggleBtn = document.getElementById('soundToggleBtn');
 
+const searchBoxWrap = document.getElementById('searchBoxWrap');
+const searchInput = document.getElementById('searchInput');
+const searchToggleBtn = document.getElementById('searchToggleBtn');
+const clearChatBtn = document.getElementById('clearChatBtn');
+const exportChatBtn = document.getElementById('exportChatBtn');
+
 const messagesContainer = document.getElementById('messagesContainer');
 const messagesList = document.getElementById('messagesList');
 const roomWelcomeBanner = document.getElementById('roomWelcomeBanner');
@@ -52,22 +62,25 @@ const welcomeRoomName = document.getElementById('welcomeRoomName');
 const welcomeRoomNameSub = document.getElementById('welcomeRoomNameSub');
 const scrollBottomBtn = document.getElementById('scrollBottomBtn');
 
+const spamBanner = document.getElementById('spamBanner');
+const spamText = document.getElementById('spamText');
+const spamCountdown = document.getElementById('spamCountdown');
+
 const typingIndicator = document.getElementById('typingIndicator');
 const typingText = document.getElementById('typingText');
 
 const chatForm = document.getElementById('chatForm');
 const messageInput = document.getElementById('messageInput');
+const sendBtn = document.getElementById('sendBtn');
 const emojiToggleBtn = document.getElementById('emojiToggleBtn');
 const emojiPicker = document.getElementById('emojiPicker');
 
-// Singleton AudioContext (prevents memory leak & channel exhaustion)
+// Singleton AudioContext for synth sounds
 let cachedAudioCtx = null;
 function getAudioContext() {
   if (!cachedAudioCtx) {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (AudioContextClass) {
-      cachedAudioCtx = new AudioContextClass();
-    }
+    if (AudioContextClass) cachedAudioCtx = new AudioContextClass();
   }
   if (cachedAudioCtx && cachedAudioCtx.state === 'suspended') {
     cachedAudioCtx.resume().catch(() => {});
@@ -75,31 +88,33 @@ function getAudioContext() {
   return cachedAudioCtx;
 }
 
-// Play notification chime using Web Audio API synth
-function playNotificationSound() {
+function playNotificationSound(type = 'msg') {
   if (!soundEnabled) return;
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
-
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1); // A5
-
-    gain.gain.setValueAtTime(0.08, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+    if (type === 'warn') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(320, ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(160, ctx.currentTime + 0.2);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+    } else {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1); // A5
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+    }
 
     osc.connect(gain);
     gain.connect(ctx.destination);
-
     osc.start();
-    osc.stop(ctx.currentTime + 0.25);
-  } catch (err) {
-    // Autoplay policy fallback
-  }
+    osc.stop(ctx.currentTime + (type === 'warn' ? 0.2 : 0.25));
+  } catch (err) {}
 }
 
 // Helpers
@@ -130,7 +145,7 @@ function escapeHTML(str) {
 
 // Smart Smooth Scrolling
 function isNearBottom() {
-  const threshold = 150; // px from bottom
+  const threshold = 150;
   return messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight <= threshold;
 }
 
@@ -142,7 +157,6 @@ function scrollToBottom(force = false) {
   }
 }
 
-// Detect user scrolling to avoid interrupting reading past messages
 messagesContainer.addEventListener('scroll', () => {
   if (isNearBottom()) {
     userScrolledUp = false;
@@ -161,7 +175,7 @@ scrollBottomBtn.addEventListener('click', () => {
   userScrolledUp = false;
 });
 
-// Update connection status badge
+// Update connection UI
 function updateConnectionUI(connected) {
   if (connected) {
     connectionStatus.className = 'connection-status-pill connected';
@@ -172,29 +186,52 @@ function updateConnectionUI(connected) {
   }
 }
 
-// Render Rooms with DocumentFragment for performance
+// Render Channels List with Deletion support
 function renderRooms(rooms) {
   availableRooms = rooms;
   const frag = document.createDocumentFragment();
   const selectFrag = document.createDocumentFragment();
 
-  rooms.forEach((room) => {
-    // Modal select option
+  rooms.forEach((r) => {
+    const roomName = typeof r === 'string' ? r : r.name;
+    const isDefault = typeof r === 'string' ? ['general', 'random', 'tech', 'lounge'].includes(r) : !!r.isDefault;
+
+    // Modal option
     const opt = document.createElement('option');
-    opt.value = room;
-    opt.textContent = `# ${room}`;
-    if (room === currentRoom) opt.selected = true;
+    opt.value = roomName;
+    opt.textContent = `# ${roomName}`;
+    if (roomName === currentRoom) opt.selected = true;
     selectFrag.appendChild(opt);
 
-    // Sidebar room item
-    const li = document.createElement('li');
-    li.className = `room-item ${room === currentRoom ? 'active' : ''}`;
-    li.innerHTML = `<span class="room-hash">#</span> <span>${escapeHTML(room)}</span>`;
-    li.addEventListener('click', () => {
-      switchRoom(room);
+    // Sidebar Row
+    const row = document.createElement('li');
+    row.className = `room-item-row ${roomName === currentRoom ? 'active' : ''}`;
+
+    const content = document.createElement('div');
+    content.className = 'room-item-content';
+    content.innerHTML = `<span class="room-hash">#</span> <span>${escapeHTML(roomName)}</span>`;
+    content.addEventListener('click', () => {
+      switchRoom(roomName);
       closeMobileSidebar();
     });
-    frag.appendChild(li);
+    row.appendChild(content);
+
+    // Delete Button (only on custom rooms)
+    if (!isDefault) {
+      const delBtn = document.createElement('button');
+      delBtn.className = 'delete-room-btn';
+      delBtn.title = `Delete #${roomName}`;
+      delBtn.innerHTML = '🗑️';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm(`Are you sure you want to delete channel #${roomName}?\nAll active members will be moved to #general.`)) {
+          socket.emit('delete_room', { room: roomName });
+        }
+      });
+      row.appendChild(delBtn);
+    }
+
+    frag.appendChild(row);
   });
 
   initialRoomSelect.innerHTML = '';
@@ -204,26 +241,35 @@ function renderRooms(rooms) {
   roomsList.appendChild(frag);
 }
 
-// Render Room Users with DocumentFragment
+// Render Room Users
 function renderRoomUsers(users) {
   userCount.textContent = users.length;
   const frag = document.createDocumentFragment();
 
   users.forEach((user) => {
-    const isMe = user.id === socket.id;
+    const isMe = user.id === currentUser.id;
     const li = document.createElement('li');
     li.className = `user-item ${isMe ? 'is-me' : ''}`;
+
+    const avatarWrap = document.createElement('div');
+    avatarWrap.className = 'user-avatar-wrap';
 
     const avatar = document.createElement('div');
     avatar.className = 'user-avatar-small';
     avatar.style.backgroundColor = user.avatarColor || '#6366f1';
     avatar.textContent = getInitials(user.username);
 
+    const dot = document.createElement('div');
+    dot.className = `user-status-dot ${user.status || 'online'}`;
+
+    avatarWrap.appendChild(avatar);
+    avatarWrap.appendChild(dot);
+
     const nameSpan = document.createElement('span');
     nameSpan.className = 'user-name-text';
     nameSpan.textContent = user.username;
 
-    li.appendChild(avatar);
+    li.appendChild(avatarWrap);
     li.appendChild(nameSpan);
     frag.appendChild(li);
   });
@@ -232,12 +278,18 @@ function renderRoomUsers(users) {
   usersList.appendChild(frag);
 }
 
-// Create DOM Message Row Element
+// Create Message Element with Reaction Support
 function createMessageElement(msg) {
-  const isOwn = msg.senderId === socket.id;
+  const isOwn = msg.senderId === currentUser.id;
 
   const row = document.createElement('div');
   row.className = `message-row ${isOwn ? 'is-own' : ''}`;
+  row.dataset.msgId = msg.id;
+
+  // Check mention of current user
+  if (currentUser.username && msg.text.includes(`@${currentUser.username}`)) {
+    row.classList.add('is-mentioned');
+  }
 
   const avatar = document.createElement('div');
   avatar.className = 'msg-avatar';
@@ -261,12 +313,39 @@ function createMessageElement(msg) {
   meta.appendChild(name);
   meta.appendChild(time);
 
+  const bubbleWrap = document.createElement('div');
+  bubbleWrap.className = 'msg-bubble-wrap';
+
   const bubble = document.createElement('div');
   bubble.className = 'msg-bubble';
   bubble.textContent = msg.text;
 
+  // Quick reaction buttons on hover
+  const quickReact = document.createElement('div');
+  quickReact.className = 'msg-quick-react';
+  ['👍', '❤️', '🔥', '😂'].forEach(emoji => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'react-quick-btn';
+    btn.textContent = emoji;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      socket.emit('toggle_reaction', { messageId: msg.id, emoji });
+    });
+    quickReact.appendChild(btn);
+  });
+
+  bubbleWrap.appendChild(bubble);
+  bubbleWrap.appendChild(quickReact);
+
+  // Reactions pill container
+  const reactionsBar = document.createElement('div');
+  reactionsBar.className = 'msg-reactions-bar';
+  renderReactionsBar(reactionsBar, msg.id, msg.reactions);
+
   body.appendChild(meta);
-  body.appendChild(bubble);
+  body.appendChild(bubbleWrap);
+  body.appendChild(reactionsBar);
 
   row.appendChild(avatar);
   row.appendChild(body);
@@ -274,41 +353,56 @@ function createMessageElement(msg) {
   return row;
 }
 
-// Render Single Message (with DOM node capping to prevent memory leaks)
+// Render Reaction Pills
+function renderReactionsBar(container, msgId, reactions) {
+  container.innerHTML = '';
+  if (!reactions) return;
+
+  Object.entries(reactions).forEach(([emoji, userList]) => {
+    if (!userList || userList.length === 0) return;
+    const isReactedByMe = userList.includes(currentUser.id);
+
+    const pill = document.createElement('button');
+    pill.type = 'button';
+    pill.className = `reaction-pill ${isReactedByMe ? 'reacted' : ''}`;
+    pill.innerHTML = `<span>${emoji}</span> <span>${userList.length}</span>`;
+    pill.title = `${userList.length} reaction${userList.length > 1 ? 's' : ''}`;
+    pill.addEventListener('click', () => {
+      socket.emit('toggle_reaction', { messageId: msgId, emoji });
+    });
+    container.appendChild(pill);
+  });
+}
+
+// Append Single Message
 const MAX_DOM_MESSAGES = 200;
 function appendMessage(msg) {
   const elem = createMessageElement(msg);
   messagesList.appendChild(elem);
 
-  // Keep DOM element count bounded
   while (messagesList.children.length > MAX_DOM_MESSAGES) {
     messagesList.removeChild(messagesList.firstChild);
   }
 
-  const isOwn = msg.senderId === socket.id;
-
+  const isOwn = msg.senderId === currentUser.id;
   if (isOwn || !userScrolledUp) {
     scrollToBottom(true);
   } else {
-    // Show 'New messages' badge if user scrolled up
     scrollBottomBtn.classList.add('visible');
   }
 
   if (!isOwn) {
-    playNotificationSound();
+    playNotificationSound('msg');
   }
 }
 
-// Render System Notice
+// System Notice
 function appendSystemNotice(text) {
   const div = document.createElement('div');
   div.className = 'system-notice';
   div.innerHTML = `<span class="system-notice-pill">${escapeHTML(text)}</span>`;
   messagesList.appendChild(div);
-
-  if (!userScrolledUp) {
-    scrollToBottom();
-  }
+  if (!userScrolledUp) scrollToBottom();
 }
 
 // Switch Room
@@ -317,60 +411,152 @@ function switchRoom(newRoom) {
   currentRoom = newRoom;
   localStorage.setItem('pulsechat_room', currentRoom);
 
-  // Update room header
   roomTitle.textContent = `# ${currentRoom}`;
   roomSubtitle.textContent = `Channel: ${currentRoom}`;
   welcomeRoomName.textContent = `#${currentRoom}`;
   welcomeRoomNameSub.textContent = `#${currentRoom}`;
   messageInput.placeholder = `Message #${currentRoom}... (Press Enter to send)`;
 
-  // Clear messages list
   messagesList.innerHTML = '';
   scrollBottomBtn.classList.remove('visible');
   userScrolledUp = false;
 
-  // Update active styling in sidebar
-  document.querySelectorAll('.room-item').forEach((item) => {
-    const isThis = item.textContent.replace('#', '').trim() === currentRoom;
-    item.classList.toggle('active', isThis);
+  document.querySelectorAll('.room-item-row').forEach((row) => {
+    const isThis = row.textContent.replace('🗑️', '').replace('#', '').trim() === currentRoom;
+    row.classList.toggle('active', isThis);
   });
 
-  // Emit room join to socket
   socket.emit('join_room', {
     username: currentUser.username,
     room: currentRoom,
   });
 }
 
-// Mobile sidebar controls
+// Anti-Spam Cooldown Trigger
+function handleSpamWarning(text, cooldownSec) {
+  playNotificationSound('warn');
+  spamText.textContent = text;
+  spamCountdown.textContent = `${cooldownSec}s`;
+  spamBanner.classList.add('show');
+
+  messageInput.disabled = true;
+  sendBtn.disabled = true;
+
+  clearInterval(spamCooldownTimer);
+  let remaining = cooldownSec;
+
+  spamCooldownTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      clearInterval(spamCooldownTimer);
+      spamBanner.classList.remove('show');
+      messageInput.disabled = false;
+      sendBtn.disabled = false;
+      messageInput.focus();
+    } else {
+      spamCountdown.textContent = `${remaining}s`;
+    }
+  }, 1000);
+}
+
+// Search / Filter Messages in Current Channel
+searchToggleBtn.addEventListener('click', () => {
+  searchBoxWrap.classList.toggle('active');
+  if (searchBoxWrap.classList.contains('active')) {
+    searchInput.focus();
+  } else {
+    searchInput.value = '';
+    filterMessages('');
+  }
+});
+
+searchInput.addEventListener('input', () => {
+  filterMessages(searchInput.value.trim().toLowerCase());
+});
+
+function filterMessages(query) {
+  document.querySelectorAll('.message-row').forEach((row) => {
+    if (!query) {
+      row.style.display = '';
+    } else {
+      const text = row.querySelector('.msg-bubble') ? row.querySelector('.msg-bubble').textContent.toLowerCase() : '';
+      const user = row.querySelector('.msg-username') ? row.querySelector('.msg-username').textContent.toLowerCase() : '';
+      row.style.display = (text.includes(query) || user.includes(query)) ? '' : 'none';
+    }
+  });
+}
+
+// Clear Channel Messages
+clearChatBtn.addEventListener('click', () => {
+  if (confirm(`Are you sure you want to clear chat history for #${currentRoom}?`)) {
+    socket.emit('clear_room_history');
+  }
+});
+
+// Export Chat History to .txt file
+exportChatBtn.addEventListener('click', () => {
+  const rows = document.querySelectorAll('.message-row');
+  if (rows.length === 0) {
+    alert('No messages to export in this channel.');
+    return;
+  }
+
+  let textData = `=== ChatterBox - Channel #${currentRoom} History ===\nExported: ${new Date().toLocaleString()}\n\n`;
+  rows.forEach((r) => {
+    const user = r.querySelector('.msg-username') ? r.querySelector('.msg-username').textContent : '';
+    const time = r.querySelector('.msg-time') ? r.querySelector('.msg-time').textContent : '';
+    const bubble = r.querySelector('.msg-bubble') ? r.querySelector('.msg-bubble').textContent : '';
+    textData += `[${time}] ${user}: ${bubble}\n`;
+  });
+
+  const blob = new Blob([textData], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ChatterBox-${currentRoom}-${Date.now()}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+// Status selection (Online / Away / Busy)
+statusSelect.value = currentUser.status;
+myStatusDot.className = `status-indicator-dot ${currentUser.status}`;
+
+statusSelect.addEventListener('change', () => {
+  const newStatus = statusSelect.value;
+  currentUser.status = newStatus;
+  localStorage.setItem('pulsechat_status', newStatus);
+  myStatusDot.className = `status-indicator-dot ${newStatus}`;
+  socket.emit('update_status', { status: newStatus });
+});
+
+// Mobile Sidebar Controls
 function openMobileSidebar() {
   sidebar.classList.add('open');
   sidebarBackdrop.classList.add('show');
 }
-
 function closeMobileSidebar() {
   sidebar.classList.remove('open');
   sidebarBackdrop.classList.remove('show');
 }
-
 openSidebarBtn.addEventListener('click', openMobileSidebar);
 closeSidebarBtn.addEventListener('click', closeMobileSidebar);
 sidebarBackdrop.addEventListener('click', closeMobileSidebar);
 
-// Touch swipe to close sidebar on mobile
+// Mobile touch swipe left to close sidebar
 let touchStartX = 0;
 sidebar.addEventListener('touchstart', (e) => {
   touchStartX = e.changedTouches[0].clientX;
 }, { passive: true });
-
 sidebar.addEventListener('touchend', (e) => {
-  const touchEndX = e.changedTouches[0].clientX;
-  if (touchStartX - touchEndX > 50) {
+  if (touchStartX - e.changedTouches[0].clientX > 50) {
     closeMobileSidebar();
   }
 }, { passive: true });
 
-// Sound toggle
+// Sound Toggle
 function updateSoundButton() {
   soundToggleBtn.textContent = soundEnabled ? '🔔' : '🔕';
   soundToggleBtn.title = soundEnabled ? 'Mute Sounds' : 'Unmute Sounds';
@@ -385,24 +571,24 @@ updateSoundButton();
 
 // Edit Username
 editNameBtn.addEventListener('click', () => {
-  const newName = prompt('Enter new display name (max 30 chars):', currentUser.username);
+  const newName = prompt('Enter new display name (max 24 chars):', currentUser.username);
   if (newName && newName.trim() && newName.trim() !== currentUser.username) {
     socket.emit('update_username', { newUsername: newName.trim() });
   }
 });
 
-// Create / Join Custom Room
+// Create Custom Channel
 newRoomBtn.addEventListener('click', () => {
-  const roomName = prompt('Enter channel name (letters, numbers, dashes):');
+  const roomName = prompt('Enter new channel name (letters, numbers, dashes):');
   if (roomName && roomName.trim()) {
-    const cleanRoom = roomName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '').substring(0, 30);
+    const cleanRoom = roomName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '').substring(0, 24);
     if (cleanRoom) {
       switchRoom(cleanRoom);
     }
   }
 });
 
-// Emoji Picker toggle & insertion
+// Emojis
 emojiToggleBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   emojiPicker.classList.toggle('show');
@@ -422,10 +608,10 @@ document.querySelectorAll('.emoji-btn').forEach((btn) => {
   });
 });
 
-// Join modal form submit
+// Join Form Submit
 joinForm.addEventListener('submit', (e) => {
   e.preventDefault();
-  const name = usernameInput.value.trim().substring(0, 30);
+  const name = usernameInput.value.trim().substring(0, 24);
   const selectedRoom = initialRoomSelect.value || 'general';
 
   if (!name) return;
@@ -437,32 +623,30 @@ joinForm.addEventListener('submit', (e) => {
   localStorage.setItem('pulsechat_room', selectedRoom);
 
   joinModal.classList.add('hidden');
-  getAudioContext(); // Initialize audio context on first user action
+  getAudioContext();
 
   switchRoom(currentRoom);
   messageInput.focus();
 });
 
-// Chat message form submit
+// Chat Form Submit
 chatForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const text = messageInput.value.trim();
   if (!text) return;
 
-  // Clear typing status
   if (isCurrentlyTyping) {
     isCurrentlyTyping = false;
     socket.emit('typing', { isTyping: false });
     clearTimeout(typingTimeout);
   }
 
-  // Send message
   socket.emit('send_message', { text });
   messageInput.value = '';
   messageInput.focus();
 });
 
-// Throttled typing indicator
+// Typing Debounce
 messageInput.addEventListener('input', () => {
   if (!isCurrentlyTyping && messageInput.value.trim().length > 0) {
     isCurrentlyTyping = true;
@@ -478,7 +662,7 @@ messageInput.addEventListener('input', () => {
   }, 1200);
 });
 
-// Socket Event Listeners
+// Socket Events
 socket.on('connect', () => {
   updateConnectionUI(true);
 
@@ -499,7 +683,6 @@ socket.on('rooms_list', (rooms) => {
   renderRooms(rooms);
 });
 
-// Batch render history with DocumentFragment for zero lag
 socket.on('joined_room_success', ({ user, room, history }) => {
   currentUser.id = user.id;
   currentUser.username = user.username;
@@ -529,6 +712,30 @@ socket.on('username_updated', ({ username }) => {
 
 socket.on('new_message', (msg) => {
   appendMessage(msg);
+});
+
+socket.on('reaction_updated', ({ messageId, reactions }) => {
+  const row = document.querySelector(`.message-row[data-msg-id="${messageId}"]`);
+  if (row) {
+    const reactionsBar = row.querySelector('.msg-reactions-bar');
+    if (reactionsBar) {
+      renderReactionsBar(reactionsBar, messageId, reactions);
+    }
+  }
+});
+
+socket.on('spam_warning', ({ text, cooldown }) => {
+  handleSpamWarning(text, cooldown);
+});
+
+socket.on('room_deleted', ({ deletedRoom, fallbackRoom }) => {
+  if (currentRoom === deletedRoom) {
+    switchRoom(fallbackRoom || 'general');
+  }
+});
+
+socket.on('room_history_cleared', () => {
+  messagesList.innerHTML = '';
 });
 
 socket.on('system_message', (sysMsg) => {

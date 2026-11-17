@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b1120">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>PulseChat - Real-Time Chat</title>
+  <title>ChatterBox - Real-Time Chat</title>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,9 +17,9 @@
   <div class="modal-overlay" id="joinModal">
     <div class="modal-card">
       <div class="modal-header">
-        <div class="brand-badge">⚡ PulseChat</div>
-        <h2>Welcome to PulseChat</h2>
-        <p>Pick a display name and choose a channel to start chatting instantly.</p>
+        <div class="brand-badge">⚡ ChatterBox</div>
+        <h2>Welcome to ChatterBox</h2>
+        <p>Pick a display name and select a channel to join the conversation.</p>
       </div>
 
       <form id="joinForm">
@@ -29,7 +29,7 @@
             type="text" 
             id="usernameInput" 
             placeholder="e.g. Alex, CyberHawk, Luna" 
-            maxlength="25" 
+            maxlength="24" 
             required 
             autofocus
           >
@@ -59,7 +59,7 @@
       <div class="sidebar-header">
         <div class="brand">
           <span class="brand-icon">⚡</span>
-          <span class="brand-name">PulseChat</span>
+          <span class="brand-name">ChatterBox</span>
         </div>
         <button class="icon-btn mobile-close-btn" id="closeSidebarBtn" title="Close Sidebar">✕</button>
       </div>
@@ -68,10 +68,10 @@
       <div class="sidebar-section">
         <div class="section-title-row">
           <span class="section-title">CHANNELS</span>
-          <button class="icon-btn add-room-btn" id="newRoomBtn" title="Create Room">+</button>
+          <button class="icon-btn add-room-btn" id="newRoomBtn" title="Create New Channel">+</button>
         </div>
         <ul class="rooms-list" id="roomsList">
-          <!-- Populated by JS -->
+          <!-- Populated by client.js -->
         </ul>
       </div>
 
@@ -81,18 +81,27 @@
           <span class="section-title">ACTIVE MEMBERS (<span id="userCount">0</span>)</span>
         </div>
         <ul class="users-list" id="usersList">
-          <!-- Populated by JS -->
+          <!-- Populated by client.js -->
         </ul>
       </div>
 
       <!-- Current User Profile Footer -->
       <div class="user-profile-footer">
-        <div class="user-avatar" id="currentUserAvatar">?</div>
+        <div class="user-avatar-wrap">
+          <div class="user-avatar" id="currentUserAvatar">?</div>
+          <div class="status-indicator-dot online" id="myStatusDot"></div>
+        </div>
         <div class="user-info">
           <span class="user-name" id="currentUserName">Not connected</span>
-          <span class="user-status"><span class="status-indicator online"></span>Online</span>
+          <div class="status-selector-wrap">
+            <select id="statusSelect" class="status-select">
+              <option value="online">🟢 Online</option>
+              <option value="away">🟡 Away</option>
+              <option value="busy">🔴 Busy</option>
+            </select>
+          </div>
         </div>
-        <button class="icon-btn edit-name-btn" id="editNameBtn" title="Change Name">✎</button>
+        <button class="icon-btn edit-name-btn" id="editNameBtn" title="Edit Name">✎</button>
       </div>
     </aside>
 
@@ -104,7 +113,7 @@
       <!-- Chat Header -->
       <header class="chat-header">
         <div class="header-left">
-          <button class="icon-btn menu-toggle-btn" id="openSidebarBtn" title="Toggle Sidebar">
+          <button class="icon-btn menu-toggle-btn" id="openSidebarBtn" title="Open Channels Menu">
             ☰
           </button>
           <div class="channel-info">
@@ -114,6 +123,16 @@
         </div>
 
         <div class="header-actions">
+          <!-- Search input box in header -->
+          <div class="search-box-wrap" id="searchBoxWrap">
+            <input type="text" id="searchInput" placeholder="Search messages..." autocomplete="off">
+            <button class="icon-btn search-toggle-btn" id="searchToggleBtn" title="Search Messages">🔍</button>
+          </div>
+
+          <!-- Channel tools: Clear Chat & Export -->
+          <button class="icon-btn header-tool-btn" id="clearChatBtn" title="Clear Channel Messages">🧹</button>
+          <button class="icon-btn header-tool-btn" id="exportChatBtn" title="Export Chat History">📥</button>
+
           <div class="connection-status-pill connected" id="connectionStatus">
             <span class="status-dot"></span>
             <span id="connectionText">Connected</span>
@@ -137,6 +156,13 @@
         ↓ New messages
       </button>
 
+      <!-- Anti-Spam Cooldown Banner -->
+      <div class="spam-alert-banner" id="spamBanner">
+        <span class="spam-icon">🚨</span>
+        <span class="spam-msg" id="spamText">Spam detected. Please wait...</span>
+        <span class="spam-countdown" id="spamCountdown">5s</span>
+      </div>
+
       <!-- Typing Indicator -->
       <div class="typing-indicator-bar" id="typingIndicator">
         <span class="typing-dots"><span></span><span></span><span></span></span>
@@ -156,10 +182,11 @@
           <button type="button" class="emoji-btn">👀</button>
           <button type="button" class="emoji-btn">🙌</button>
           <button type="button" class="emoji-btn">✨</button>
+          <button type="button" class="emoji-btn">💯</button>
         </div>
 
         <form class="input-form" id="chatForm">
-          <button type="button" class="icon-btn emoji-toggle-btn" id="emojiToggleBtn" title="Emojis">
+          <button type="button" class="icon-btn emoji-toggle-btn" id="emojiToggleBtn" title="Quick Emojis">
             😊
           </button>
           <input 
@@ -167,7 +194,7 @@
             id="messageInput" 
             placeholder="Message #general... (Press Enter to send)" 
             autocomplete="off" 
-            maxlength="1000"
+            maxlength="600"
           >
           <button type="submit" class="send-btn" id="sendBtn" title="Send message">
             <span>Send</span>
@@ -181,7 +208,7 @@
     </main>
   </div>
 
-  <!-- Socket.io client script -->
+  <!-- Socket.io client -->
   <script src="/socket.io/socket.io.js"></script>
   <!-- Main application script -->
   <script src="client.js"></script>

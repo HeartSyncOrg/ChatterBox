@@ -29,7 +29,7 @@ app.use(
   })
 );
 
-// Optimize Socket.IO engine with strict payload bounds
+// Socket.IO Server Configuration
 const io = new Server(server, {
   cors: {
     origin: '*',
@@ -37,18 +37,18 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],
   pingInterval: 25000,
   pingTimeout: 20000,
-  maxHttpBufferSize: 1e5, // 100KB max payload limit (prevents memory attacks)
+  maxHttpBufferSize: 1e5, // 100KB payload limit
 });
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 
-// Enable HTTP response compression
+// Enable HTTP compression
 app.use(compression({
   level: 6,
   threshold: 1024,
 }));
 
-// Additional HTTP Security & Mobile caching headers
+// Security & Mobile response headers
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
@@ -56,18 +56,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Serve static frontend files
+// Serve frontend assets
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: '1h',
   etag: true,
 }));
 
-// In-memory data storage
-const users = new Map(); // socket.id -> { id, publicId, username, room, avatarColor, rateLimitWindow, msgCount }
+// In-Memory Data Storage
+const users = new Map(); // socket.id -> { id, publicId, username, room, avatarColor, status, rateLimitWindow, msgCount, cooldownUntil, lastMsgText, dupCount }
 const defaultRooms = ['general', 'random', 'tech', 'lounge'];
 const customRooms = new Set();
 const messageHistory = new Map(); // roomName -> Array<Message>
-const MAX_HISTORY = 100;
+const MAX_HISTORY = 120;
 
 // Color palette for user avatars
 const AVATAR_COLORS = [
@@ -80,15 +80,19 @@ function getRandomColor() {
 }
 
 function getAllRooms() {
-  return Array.from(new Set([...defaultRooms, ...customRooms]));
+  return [
+    ...defaultRooms.map(r => ({ name: r, isDefault: true })),
+    ...Array.from(customRooms).map(r => ({ name: r, isDefault: false }))
+  ];
 }
 
-// Sanitize user text inputs (prevents XSS, control chars, injections)
+// Input Sanitization
 function sanitizeText(str, maxLen = 500) {
   if (typeof str !== 'string') return '';
   return str
-    .replace(/[<>]/g, '') // remove angle brackets
-    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // remove non-printable control chars
+    .replace(/[<>]/g, '') // remove brackets
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // remove control chars
+    .replace(/(.)\1{14,}/g, '$1$1$1$1$1') // collapse spam character floods (e.g. aaaaa...)
     .trim()
     .substring(0, maxLen);
 }
@@ -107,9 +111,10 @@ function getRoomUsers(roomName) {
   for (const user of users.values()) {
     if (user.room === roomName) {
       roomUsers.push({
-        id: user.publicId, // Never expose raw socket.id
+        id: user.publicId,
         username: user.username,
         avatarColor: user.avatarColor,
+        status: user.status || 'online',
       });
     }
   }
@@ -127,36 +132,72 @@ function addMessageToHistory(room, msg) {
   }
 }
 
-// Anti-flood rate limiting: max 4 messages per 2-second burst
-function checkRateLimit(user) {
+// Anti-Spam Verification
+function verifySpam(user, text) {
   const now = Date.now();
+
+  // 1. Check if user is currently under temporary cooldown
+  if (user.cooldownUntil && now < user.cooldownUntil) {
+    const remainingSec = Math.ceil((user.cooldownUntil - now) / 1000);
+    return {
+      allowed: false,
+      reason: `⏳ Spam protection active. Please wait ${remainingSec}s before sending another message.`,
+      cooldown: remainingSec,
+    };
+  }
+
+  // 2. Duplicate Message Flood Detection
+  if (user.lastMsgText && user.lastMsgText.toLowerCase() === text.toLowerCase()) {
+    user.dupCount = (user.dupCount || 0) + 1;
+    if (user.dupCount >= 3) {
+      user.cooldownUntil = now + 4000; // 4s cooldown for repeating duplicate spam
+      return {
+        allowed: false,
+        reason: '⚠️ Duplicate message flood detected. Please do not repeat the exact same text.',
+        cooldown: 4,
+      };
+    }
+  } else {
+    user.dupCount = 0;
+  }
+  user.lastMsgText = text;
+
+  // 3. Rate Limit Frequency Check (max 3 messages in 2 seconds)
   if (!user.rateLimitWindow || now - user.rateLimitWindow > 2000) {
     user.rateLimitWindow = now;
     user.msgCount = 1;
-    return true;
+    return { allowed: true };
   }
+
   user.msgCount = (user.msgCount || 0) + 1;
-  return user.msgCount <= 4;
+  if (user.msgCount > 3) {
+    user.cooldownUntil = now + 5000; // 5s cooldown
+    return {
+      allowed: false,
+      reason: '🚨 Rapid messaging detected! You are placed on a 5-second cooldown.',
+      cooldown: 5,
+    };
+  }
+
+  return { allowed: true };
 }
 
 io.on('connection', (socket) => {
-  // Send available rooms list to newly connected client
+  // Send room list with default/custom tags
   socket.emit('rooms_list', getAllRooms());
 
-  // Handle user joining a room
+  // Join Room
   socket.on('join_room', ({ username, room }) => {
     const cleanUsername = sanitizeText(username, 24) || `User_${socket.id.substring(0, 4)}`;
     const normalizedRoom = sanitizeIdentifier(room, 24) || 'general';
 
-    // Store custom room
     if (!defaultRooms.includes(normalizedRoom)) {
-      if (customRooms.size < 50) { // Bound total active custom rooms to avoid memory bloat
+      if (customRooms.size < 60) {
         customRooms.add(normalizedRoom);
         io.emit('rooms_list', getAllRooms());
       }
     }
 
-    // Leave previous room if any
     const existingUser = users.get(socket.id);
     if (existingUser && existingUser.room) {
       const prevRoom = existingUser.room;
@@ -170,9 +211,9 @@ io.on('connection', (socket) => {
       io.to(prevRoom).emit('room_users', getRoomUsers(prevRoom));
     }
 
-    // Register user details with opaque publicId
     const publicId = existingUser ? existingUser.publicId : crypto.randomBytes(8).toString('hex');
     const avatarColor = existingUser ? existingUser.avatarColor : getRandomColor();
+    const currentStatus = existingUser ? existingUser.status : 'online';
 
     users.set(socket.id, {
       id: socket.id,
@@ -180,20 +221,23 @@ io.on('connection', (socket) => {
       username: cleanUsername,
       room: normalizedRoom,
       avatarColor,
+      status: currentStatus,
       rateLimitWindow: 0,
       msgCount: 0,
+      cooldownUntil: 0,
+      lastMsgText: '',
+      dupCount: 0,
     });
 
     socket.join(normalizedRoom);
 
-    // Send confirmation to user
     socket.emit('joined_room_success', {
-      user: { id: publicId, username: cleanUsername, avatarColor },
+      user: { id: publicId, username: cleanUsername, avatarColor, status: currentStatus },
       room: normalizedRoom,
+      isDefault: defaultRooms.includes(normalizedRoom),
       history: messageHistory.get(normalizedRoom) || [],
     });
 
-    // Notify room participants
     socket.to(normalizedRoom).emit('system_message', {
       id: `sys-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
       text: `${cleanUsername} joined #${normalizedRoom}!`,
@@ -203,30 +247,32 @@ io.on('connection', (socket) => {
     io.to(normalizedRoom).emit('room_users', getRoomUsers(normalizedRoom));
   });
 
-  // Handle sending chat message
+  // Send Message
   socket.on('send_message', ({ text }) => {
     const user = users.get(socket.id);
     if (!user || !user.room) return;
 
-    if (!checkRateLimit(user)) {
-      socket.emit('system_message', {
-        id: `sys-${Date.now()}`,
-        text: '⚠️ Slow down! You are sending messages too quickly.',
-        timestamp: new Date().toISOString(),
+    const cleanText = sanitizeText(text, 600);
+    if (!cleanText) return;
+
+    // Run Anti-Spam engine
+    const spamCheck = verifySpam(user, cleanText);
+    if (!spamCheck.allowed) {
+      socket.emit('spam_warning', {
+        text: spamCheck.reason,
+        cooldown: spamCheck.cooldown || 5,
       });
       return;
     }
 
-    const cleanText = sanitizeText(text, 600);
-    if (!cleanText) return;
-
     const message = {
       id: `msg-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
-      senderId: user.publicId, // safe publicId
+      senderId: user.publicId,
       username: user.username,
       avatarColor: user.avatarColor,
       text: cleanText,
       room: user.room,
+      reactions: {}, // emoji -> [publicId]
       timestamp: new Date().toISOString(),
     };
 
@@ -234,7 +280,122 @@ io.on('connection', (socket) => {
     io.to(user.room).emit('new_message', message);
   });
 
-  // Handle typing state
+  // Message Reactions (👍, ❤️, 🔥, 😂, 🎉, 🚀)
+  socket.on('toggle_reaction', ({ messageId, emoji }) => {
+    const user = users.get(socket.id);
+    if (!user || !user.room) return;
+
+    const history = messageHistory.get(user.room);
+    if (!history) return;
+
+    const msg = history.find(m => m.id === messageId);
+    if (!msg) return;
+
+    if (!msg.reactions) msg.reactions = {};
+    const validEmojis = ['👍', '❤️', '🔥', '😂', '🎉', '🚀'];
+    if (!validEmojis.includes(emoji)) return;
+
+    if (!msg.reactions[emoji]) {
+      msg.reactions[emoji] = [];
+    }
+
+    const userIndex = msg.reactions[emoji].indexOf(user.publicId);
+    if (userIndex > -1) {
+      msg.reactions[emoji].splice(userIndex, 1);
+      if (msg.reactions[emoji].length === 0) {
+        delete msg.reactions[emoji];
+      }
+    } else {
+      msg.reactions[emoji].push(user.publicId);
+    }
+
+    io.to(user.room).emit('reaction_updated', {
+      messageId,
+      reactions: msg.reactions,
+    });
+  });
+
+  // Delete Channel (only for custom rooms, default rooms are protected)
+  socket.on('delete_room', ({ room }) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+
+    const normalizedRoom = sanitizeIdentifier(room, 24);
+    if (!normalizedRoom || defaultRooms.includes(normalizedRoom)) {
+      socket.emit('system_message', {
+        id: `sys-${Date.now()}`,
+        text: '❌ Protected default channels cannot be deleted.',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    if (customRooms.has(normalizedRoom)) {
+      customRooms.delete(normalizedRoom);
+      messageHistory.delete(normalizedRoom);
+
+      // Broadcast room deletion notice
+      io.emit('room_deleted', {
+        deletedRoom: normalizedRoom,
+        fallbackRoom: 'general',
+      });
+
+      // Update room list for all users
+      io.emit('rooms_list', getAllRooms());
+
+      // Move all sockets currently in the deleted room to #general
+      io.in(normalizedRoom).socketsJoin('general');
+      io.in(normalizedRoom).socketsLeave(normalizedRoom);
+
+      for (const [sId, u] of users.entries()) {
+        if (u.room === normalizedRoom) {
+          u.room = 'general';
+          users.set(sId, u);
+        }
+      }
+
+      io.to('general').emit('system_message', {
+        id: `sys-${Date.now()}`,
+        text: `Channel #${normalizedRoom} was deleted by ${user.username}. Members moved to #general.`,
+        timestamp: new Date().toISOString(),
+      });
+      io.to('general').emit('room_users', getRoomUsers('general'));
+    }
+  });
+
+  // Clear Channel History
+  socket.on('clear_room_history', () => {
+    const user = users.get(socket.id);
+    if (!user || !user.room) return;
+
+    messageHistory.set(user.room, []);
+
+    io.to(user.room).emit('room_history_cleared', { room: user.room });
+
+    io.to(user.room).emit('system_message', {
+      id: `sys-${Date.now()}`,
+      text: `🧹 Channel history was cleared by ${user.username}.`,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // User Status Update (online / away / busy)
+  socket.on('update_status', ({ status }) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+
+    const validStatuses = ['online', 'away', 'busy'];
+    if (validStatuses.includes(status)) {
+      user.status = status;
+      users.set(socket.id, user);
+
+      if (user.room) {
+        io.to(user.room).emit('room_users', getRoomUsers(user.room));
+      }
+    }
+  });
+
+  // Typing state
   socket.on('typing', ({ isTyping }) => {
     const user = users.get(socket.id);
     if (!user || !user.room) return;
@@ -245,7 +406,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle username update
+  // Update username
   socket.on('update_username', ({ newUsername }) => {
     const user = users.get(socket.id);
     if (!user) return;
@@ -269,7 +430,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle user disconnect
+  // Disconnect
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) {
@@ -286,7 +447,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Graceful Port Selection
+// Port Management & Resilience
 function startServer(port) {
   server.listen(port);
 }
