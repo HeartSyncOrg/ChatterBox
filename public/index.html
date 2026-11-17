@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b1120">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>ChatterBox - Real-Time Chat</title>
+  <title>ChatterBox - Real-Time Chat & VoIP</title>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -19,7 +19,7 @@
       <div class="modal-header">
         <div class="brand-badge">⚡ ChatterBox</div>
         <h2>Welcome to ChatterBox</h2>
-        <p>Pick a display name and select a channel to join the conversation.</p>
+        <p>Pick a display name and choose a channel to start chatting & speaking.</p>
       </div>
 
       <form id="joinForm">
@@ -75,14 +75,41 @@
         </ul>
       </div>
 
+      <!-- Voice VoIP Channel Section -->
+      <div class="sidebar-section voice-section" id="voiceSection">
+        <div class="section-title-row">
+          <span class="section-title">VOIP VOICE (<span id="voiceCount">0</span>)</span>
+          <span class="voice-badge" id="voiceStatusBadge">Idle</span>
+        </div>
+        <ul class="voice-users-list" id="voiceUsersList">
+          <li class="voice-empty-hint" id="voiceEmptyHint">No one in voice. Join below!</li>
+        </ul>
+      </div>
+
       <!-- Online Members in Current Room -->
       <div class="sidebar-section online-section">
         <div class="section-title-row">
-          <span class="section-title">ACTIVE MEMBERS (<span id="userCount">0</span>)</span>
+          <span class="section-title">TEXT MEMBERS (<span id="userCount">0</span>)</span>
         </div>
         <ul class="users-list" id="usersList">
           <!-- Populated by client.js -->
         </ul>
+      </div>
+
+      <!-- Voice Control Panel (Discord-style bottom bar) -->
+      <div class="voice-connected-bar" id="voiceConnectedBar">
+        <div class="voice-bar-info">
+          <div class="voice-indicator-dot"></div>
+          <div class="voice-bar-text">
+            <span class="voice-channel-name" id="voiceBarChannel">Voice Connected</span>
+            <span class="voice-status-sub" id="voicePing">RTC Audio Active</span>
+          </div>
+        </div>
+        <div class="voice-bar-actions">
+          <button class="icon-btn voice-btn" id="micToggleBtn" title="Mute/Unmute Mic">🎙️</button>
+          <button class="icon-btn voice-btn" id="deafenToggleBtn" title="Deafen Audio">🔊</button>
+          <button class="icon-btn voice-btn disconnect-btn" id="leaveVoiceBtn" title="Disconnect Voice">📞</button>
+        </div>
       </div>
 
       <!-- Current User Profile Footer -->
@@ -123,15 +150,20 @@
         </div>
 
         <div class="header-actions">
+          <!-- Voice Join Button -->
+          <button class="btn-voice-join" id="joinVoiceTopBtn" title="Join Voice Call">
+            <span class="voice-icon-svg">🎙️</span>
+            <span class="voice-join-text">Join Voice</span>
+          </button>
+
           <!-- Search input box in header -->
           <div class="search-box-wrap" id="searchBoxWrap">
             <input type="text" id="searchInput" placeholder="Search messages..." autocomplete="off">
             <button class="icon-btn search-toggle-btn" id="searchToggleBtn" title="Search Messages">🔍</button>
           </div>
 
-          <!-- Channel tools: Clear Chat & Export -->
+          <!-- Channel tools: Clear Chat -->
           <button class="icon-btn header-tool-btn" id="clearChatBtn" title="Clear Channel Messages">🧹</button>
-          <button class="icon-btn header-tool-btn" id="exportChatBtn" title="Export Chat History">📥</button>
 
           <div class="connection-status-pill connected" id="connectionStatus">
             <span class="status-dot"></span>
@@ -146,7 +178,7 @@
         <div class="welcome-banner" id="roomWelcomeBanner">
           <div class="welcome-icon">💬</div>
           <h3>Welcome to <span id="welcomeRoomName">#general</span>!</h3>
-          <p>This is the start of the <span id="welcomeRoomNameSub">#general</span> channel history. Send a friendly hello!</p>
+          <p>This is the start of the <span id="welcomeRoomNameSub">#general</span> channel history. Text and speak freely!</p>
         </div>
         <div class="messages-list" id="messagesList"></div>
       </div>
@@ -207,6 +239,9 @@
       </footer>
     </main>
   </div>
+
+  <!-- Audio elements container for VoIP streams -->
+  <div id="audioStreamsContainer" style="display:none;"></div>
 
   <!-- Socket.io client -->
   <script src="/socket.io/socket.io.js"></script>
