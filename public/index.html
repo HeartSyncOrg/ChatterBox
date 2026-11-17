@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0b1120">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>PulseChat - Real-Time Chat</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Modal for Joining Chat -->
+  <div class="modal-overlay" id="joinModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="brand-badge">⚡ PulseChat</div>
+        <h2>Welcome to PulseChat</h2>
+        <p>Pick a display name and choose a channel to start chatting instantly.</p>
+      </div>
+
+      <form id="joinForm">
+        <div class="input-group">
+          <label for="usernameInput">Display Name</label>
+          <input 
+            type="text" 
+            id="usernameInput" 
+            placeholder="e.g. Alex, CyberHawk, Luna" 
+            maxlength="25" 
+            required 
+            autofocus
+          >
+        </div>
+
+        <div class="input-group">
+          <label for="initialRoomSelect">Select Channel</label>
+          <select id="initialRoomSelect">
+            <option value="general"># general</option>
+            <option value="random"># random</option>
+            <option value="tech"># tech</option>
+            <option value="lounge"># lounge</option>
+          </select>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block">
+          Join Channel 🚀
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main App Layout -->
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="brand-icon">⚡</span>
+          <span class="brand-name">PulseChat</span>
+        </div>
+        <button class="icon-btn mobile-close-btn" id="closeSidebarBtn" title="Close Sidebar">✕</button>
+      </div>
+
+      <!-- Channels List -->
+      <div class="sidebar-section">
+        <div class="section-title-row">
+          <span class="section-title">CHANNELS</span>
+          <button class="icon-btn add-room-btn" id="newRoomBtn" title="Create Room">+</button>
+        </div>
+        <ul class="rooms-list" id="roomsList">
+          <!-- Populated by JS -->
+        </ul>
+      </div>
+
+      <!-- Online Members in Current Room -->
+      <div class="sidebar-section online-section">
+        <div class="section-title-row">
+          <span class="section-title">ACTIVE MEMBERS (<span id="userCount">0</span>)</span>
+        </div>
+        <ul class="users-list" id="usersList">
+          <!-- Populated by JS -->
+        </ul>
+      </div>
+
+      <!-- Current User Profile Footer -->
+      <div class="user-profile-footer">
+        <div class="user-avatar" id="currentUserAvatar">?</div>
+        <div class="user-info">
+          <span class="user-name" id="currentUserName">Not connected</span>
+          <span class="user-status"><span class="status-indicator online"></span>Online</span>
+        </div>
+        <button class="icon-btn edit-name-btn" id="editNameBtn" title="Change Name">✎</button>
+      </div>
+    </aside>
+
+    <!-- Backdrop for mobile sidebar -->
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <!-- Main Chat Workspace -->
+    <main class="chat-workspace">
+      <!-- Chat Header -->
+      <header class="chat-header">
+        <div class="header-left">
+          <button class="icon-btn menu-toggle-btn" id="openSidebarBtn" title="Toggle Sidebar">
+            ☰
+          </button>
+          <div class="channel-info">
+            <h1 class="current-room-name" id="roomTitle"># general</h1>
+            <span class="room-status-desc" id="roomSubtitle">Welcome to the channel!</span>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <div class="connection-status-pill connected" id="connectionStatus">
+            <span class="status-dot"></span>
+            <span id="connectionText">Connected</span>
+          </div>
+          <button class="icon-btn sound-toggle-btn" id="soundToggleBtn" title="Toggle Sound">🔔</button>
+        </div>
+      </header>
+
+      <!-- Message Feed -->
+      <div class="messages-container" id="messagesContainer">
+        <div class="welcome-banner" id="roomWelcomeBanner">
+          <div class="welcome-icon">💬</div>
+          <h3>Welcome to <span id="welcomeRoomName">#general</span>!</h3>
+          <p>This is the start of the <span id="welcomeRoomNameSub">#general</span> channel history. Send a friendly hello!</p>
+        </div>
+        <div class="messages-list" id="messagesList"></div>
+      </div>
+
+      <!-- Jump to Latest Messages Pill -->
+      <button class="scroll-bottom-pill" id="scrollBottomBtn">
+        ↓ New messages
+      </button>
+
+      <!-- Typing Indicator -->
+      <div class="typing-indicator-bar" id="typingIndicator">
+        <span class="typing-dots"><span></span><span></span><span></span></span>
+        <span class="typing-text" id="typingText">Someone is typing...</span>
+      </div>
+
+      <!-- Chat Input Area -->
+      <footer class="chat-input-area">
+        <!-- Emoji Quick Picker -->
+        <div class="emoji-picker" id="emojiPicker">
+          <button type="button" class="emoji-btn">👍</button>
+          <button type="button" class="emoji-btn">❤️</button>
+          <button type="button" class="emoji-btn">🔥</button>
+          <button type="button" class="emoji-btn">😂</button>
+          <button type="button" class="emoji-btn">🎉</button>
+          <button type="button" class="emoji-btn">🚀</button>
+          <button type="button" class="emoji-btn">👀</button>
+          <button type="button" class="emoji-btn">🙌</button>
+          <button type="button" class="emoji-btn">✨</button>
+        </div>
+
+        <form class="input-form" id="chatForm">
+          <button type="button" class="icon-btn emoji-toggle-btn" id="emojiToggleBtn" title="Emojis">
+            😊
+          </button>
+          <input 
+            type="text" 
+            id="messageInput" 
+            placeholder="Message #general... (Press Enter to send)" 
+            autocomplete="off" 
+            maxlength="1000"
+          >
+          <button type="submit" class="send-btn" id="sendBtn" title="Send message">
+            <span>Send</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </form>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Socket.io client script -->
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- Main application script -->
+  <script src="client.js"></script>
+</body>
+</html>
